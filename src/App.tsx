@@ -34,6 +34,8 @@ interface RawData {
 interface InventoryItem {
   id: string;
   producto: string;
+  unidad: string;
+  codigo: string;
   sede: string;
   familia: string;
   totalVendido: number;
@@ -55,14 +57,9 @@ function fixMojibake(value: any): string {
 }
 
 function normalizeText(value: any): string {
-  return String(value ?? "")
+  return fixMojibake(value)
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/Ã³|Ã“/g, "o")
-    .replace(/Ã©|Ã‰/g, "e")
-    .replace(/Ã¡|ÃÁ/g, "a")
-    .replace(/Ã±|Ã‘/g, "n")
-    .replace(/Ã•|ÃÍ/g, "i")
     .replace(/[^a-zA-Z0-9]+/g, " ")
     .trim()
     .toLowerCase();
@@ -98,20 +95,24 @@ function findColumn(columns: string[], aliases: string[]): string | null {
 
 export default function App() {
   const [data, setData] = useState<InventoryItem[]>([]);
+  const [rawCount, setRawCount] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [filterSede, setFilterSede] = useState('TODAS');
   const [filterProducto, setFilterProducto] = useState('');
   const [filterFamilia, setFilterFamilia] = useState<string[]>([]);
-  const [isFamilyDropdownOpen, setIsFamilyDropdownOpen] = useState(false);
+  const [familySearch, setFamilySearch] = useState('');
+  const [showFamilyDropdown, setShowFamilyDropdown] = useState(false);
   const familyDropdownRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (familyDropdownRef.current && !familyDropdownRef.current.contains(event.target as Node)) {
-        setIsFamilyDropdownOpen(false);
+        setShowFamilyDropdown(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -135,79 +136,130 @@ export default function App() {
     setFilterSede('TODAS');
     setFilterFamilia([]);
 
+    setIsProcessing(true);
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
         const data = new Uint8Array(evt.target?.result as ArrayBuffer);
         const wb = XLSX.read(data, { type: 'array' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const rawJson = XLSX.utils.sheet_to_json<RawData>(ws, { defval: null });
         
-        if (!rawJson.length) {
-          setError("El archivo está vacío o no contiene datos válidos.");
+        // Identify sheets: first one is Sales (Ventas), any sheet with "stock" in name is Stock
+        const ventasSheetName = wb.SheetNames[0];
+        const stockSheetName = wb.SheetNames.find((name) => 
+          normalizeText(name).includes("stock")
+        );
+
+        const ventasJson = XLSX.utils.sheet_to_json<RawData>(wb.Sheets[ventasSheetName], { defval: null });
+        let stockJson: RawData[] = [];
+        if (stockSheetName) {
+          stockJson = XLSX.utils.sheet_to_json<RawData>(wb.Sheets[stockSheetName], { defval: null });
+        }
+        
+        if (!ventasJson.length) {
+          setError("El archivo está vacío o no contiene datos de ventas válidos en la primera hoja.");
+          setIsProcessing(false);
           return;
         }
 
-        processData(rawJson);
+        setRawCount(ventasJson.length);
+        processData(ventasJson, stockJson);
+        setIsProcessing(false);
       } catch (err) {
         setError("Error al procesar el archivo Excel. Asegúrate de que sea un formato válido.");
         console.error(err);
+        setIsProcessing(false);
       }
     };
     reader.readAsArrayBuffer(file);
   };
 
-  const processData = (rawJson: RawData[]) => {
-    const columns = Object.keys(rawJson[0]).map((c) => String(c).trim());
+  const processData = (ventasJson: RawData[], stockJson: RawData[] = []) => {
+    const columns = Object.keys(ventasJson[0]).map((c) => String(c).trim());
 
-    let sedeCol = findColumn(columns, ["Sede", "Almacen", "Almacén", "almacen", "almacen", "almac", "alm", "Sucursal"]);
-    let fechaCol = findColumn(columns, ["Fecha", "fecha", "fec"]);
-    let articuloCol = findColumn(columns, ["Producto", "Articulo", "Artículo", "Subarticulo", "Subartículo", "articulo", "subarticulo", "art", "subart"]);
-    let familiaCol = findColumn(columns, ["Subfamilia", "Familia", "familia", "fam"]);
-    let ventaCol = findColumn(columns, ["Cantidad", "Venta", "venta", "valor", "Unidades"]);
-    let costoUnitarioCol = findColumn(columns, ["Coste Unitario", "Costo Unitario", "Costo", "coste unitario", "coste", "precio", "Precio Costo"]);
+    // 🔥 Detección más agresiva (incluye errores de encoding y alias comunes)
+    let sedeCol = findColumn(columns, ["Sede", "Almacen", "Almacén", "almacen", "almacen", "almac", "alm", "Sucursal", "Sede/Almacen", "AlmacÃ©n"]);
+    let fechaCol = findColumn(columns, ["Fecha", "fecha", "fec", "Date"]);
+    let articuloCol = findColumn(columns, ["Producto", "Articulo", "Artículo", "Subarticulo", "Subartículo", "articulo", "subarticulo", "art", "subart", "Nombre", "ArtÃculo"]);
+    let unidadCol = findColumn(columns, ["Unidad", "Unidad de Medida", "UM", "U.M.", "UOM", "Subarticulo", "Subartículo", "Presentacion", "Presentación", "Subartículo"]);
+    let familiaCol = findColumn(columns, ["Subfamilia", "Familia", "familia", "fam", "Grupo", "Categoría"]);
+    let ventaCol = findColumn(columns, ["Cantidad", "Venta", "venta", "valor", "Unidades", "Cant", "Qty"]);
+    let costoUnitarioCol = findColumn(columns, ["Coste Unitario", "Costo Unitario", "Costo", "coste unitario", "coste", "precio", "Precio Costo", "Unit Cost"]);
+    let codigoCol = findColumn(columns, ["Cód. Barras", "CÃ³d. Barras", "Cod. Barras", "Referencia", "Codigo", "Código"]);
 
-    // ⚠️ fallback automático si no detecta columnas
-    if (!sedeCol || !fechaCol || !articuloCol || !ventaCol) {
-      console.log("Columnas detectadas:", columns);
+    // ⚠️ Fallback automático por posición si falla la detección por nombre
+    if (!sedeCol || !articuloCol || !ventaCol) {
       sedeCol = sedeCol || columns[0];
       fechaCol = fechaCol || columns[1];
       familiaCol = familiaCol || columns[2];
-      articuloCol = articuloCol || columns[4];
-      ventaCol = ventaCol || columns[6];
+      articuloCol = articuloCol || columns[4] || columns[3];
+      ventaCol = ventaCol || columns[6] || columns[5];
       costoUnitarioCol = costoUnitarioCol || columns[7];
     }
 
-    const grouped: Record<string, { producto: string; sede: string; familia: string; total: number }> = {};
+    // Process Stock sheet if available using Maps for better matching
+    const stockMapByCode = new Map<string, number>();
+    const stockMapByName = new Map<string, number>();
 
-    rawJson.forEach((row) => {
+    if (stockJson.length > 0) {
+      const stockCols = Object.keys(stockJson[0]).map(c => String(c).trim());
+      const sSedeCol = findColumn(stockCols, ["Sede", "Almacen", "Sucursal", "Sede/Almacen", "Almacén", "AlmacÃ©n"]);
+      const sArtCol = findColumn(stockCols, ["Producto", "Articulo", "Nombre", "Artículo", "ArtÃculo"]);
+      const sSubArtCol = findColumn(stockCols, ["Subarticulo", "Subartículo", "Unidad", "Presentación", "Subartículo"]);
+      const sCodeCol = findColumn(stockCols, ["Codigo", "Código", "Cód. Barras", "Referencia", "CÃ³d. Barras"]);
+      const sStockCol = findColumn(stockCols, ["Stock", "Inventario", "Existencias", "Cant", "Cantidad", "Actual"]);
+      
+      if (sArtCol && sStockCol) {
+        stockJson.forEach(row => {
+          const sede = fixMojibake(row[sSedeCol!]);
+          const producto = fixMojibake(row[sArtCol]);
+          const subarticulo = sSubArtCol ? fixMojibake(row[sSubArtCol]) : "";
+          const codigo = sCodeCol ? String(row[sCodeCol] || "").trim() : "";
+          const stock = Number(row[sStockCol] || 0);
+
+          if (sede && codigo) {
+            const keyCode = `${normalizeText(sede)}__${normalizeText(codigo)}`;
+            stockMapByCode.set(keyCode, (stockMapByCode.get(keyCode) || 0) + stock);
+          }
+
+          if (sede && producto) {
+            const keyName = `${normalizeText(sede)}__${normalizeText(producto)}__${normalizeText(subarticulo)}`;
+            stockMapByName.set(keyName, (stockMapByName.get(keyName) || 0) + stock);
+          }
+        });
+      }
+    }
+
+    const grouped: Record<string, { producto: string; unidad: string; codigo: string; sede: string; familia: string; total: number }> = {};
+
+    ventasJson.forEach((row) => {
       const rawProd = articuloCol ? row[articuloCol] : "";
+      const rawUnidad = unidadCol ? row[unidadCol] : "—";
+      const rawSede = sedeCol ? row[sedeCol] : "GENERAL";
       const rawFam = familiaCol ? row[familiaCol] : "SIN FAMILIA";
+      const rawCode = codigoCol ? row[codigoCol] : "";
       
       const prodName = fixMojibake(rawProd);
-      const sede = fixMojibake(row[sedeCol!]);
+      const unidad = fixMojibake(rawUnidad) || "—";
+      const sede = fixMojibake(rawSede);
       const familia = fixMojibake(rawFam) || "SIN FAMILIA";
+      const codigo = String(rawCode || "").trim();
       
+      if (!prodName || prodName === "null" || prodName === "undefined") return;
+
       let cant = 0;
       const venta = Number(row[ventaCol!] || 0);
       const costoUnitario = costoUnitarioCol ? Number(row[costoUnitarioCol] || 0) : 0;
       
-      // Calculate quantity: if it's a "Venta" column and we have unit cost, divide.
-      // Otherwise assume it's already a quantity.
       const normalizedVentaCol = normalizeText(ventaCol);
-      if ((normalizedVentaCol === "venta" || normalizedVentaCol === "valor") && costoUnitario > 0) {
+      if ((normalizedVentaCol.includes("venta") || normalizedVentaCol.includes("valor")) && costoUnitario > 0) {
         cant = venta / costoUnitario;
       } else {
         cant = venta;
       }
 
-      if (!prodName || !sede) return;
-
-      // Include familia in key to ensure correct filtering
-      const key = `${prodName}_${sede}_${familia}`;
+      const key = `${prodName}_${unidad}_${sede}_${familia}`;
       if (!grouped[key]) {
-        grouped[key] = { producto: prodName, sede: sede, familia: familia, total: 0 };
+        grouped[key] = { producto: prodName, unidad: unidad, codigo: codigo, sede: sede, familia: familia, total: 0 };
       }
       grouped[key].total += cant;
     });
@@ -218,17 +270,28 @@ export default function App() {
       const maximo = consumoDiario * 3;
       const safetyMargin = 1.25;
       
+      // Try to find stock in lookup using dual strategy
+      const keyCode = item.codigo ? `${normalizeText(item.sede)}__${normalizeText(item.codigo)}` : null;
+      const keyName = `${normalizeText(item.sede)}__${normalizeText(item.producto)}__${normalizeText(item.unidad)}`;
+      
+      const stockActualPorCodigo = keyCode ? stockMapByCode.get(keyCode) : undefined;
+      const stockActualPorNombre = stockMapByName.get(keyName);
+      
+      const actualStock = Number(stockActualPorCodigo ?? stockActualPorNombre ?? 0);
+      
       return {
         id: `${index}-${item.producto}-${item.sede}`,
         producto: item.producto,
+        unidad: item.unidad,
+        codigo: item.codigo,
         sede: item.sede,
         familia: item.familia,
         totalVendido: item.total,
         consumoDiario,
         minimo,
         maximo,
-        inventarioActual: 0,
-        reposicion: Math.max(0, maximo * safetyMargin) // Initial reposicion with 25% safety margin
+        inventarioActual: actualStock,
+        reposicion: Math.max(0, (maximo * safetyMargin) - actualStock)
       };
     });
 
@@ -279,9 +342,13 @@ export default function App() {
 
   const stats = useMemo(() => {
     if (data.length === 0) return null;
+    const totalProductos = new Set(filteredData.map(item => item.producto)).size;
+    const totalSedes = new Set(filteredData.map(item => item.sede)).size;
+    
     return {
       totalItems: filteredData.length,
-      totalSedes: new Set(filteredData.map(item => item.sede)).size,
+      totalProductos,
+      totalSedes,
       lowStock: filteredData.filter(item => item.inventarioActual < item.minimo).length,
       nearMinStock: filteredData.filter(item => item.inventarioActual >= item.minimo && item.inventarioActual < item.minimo * 1.3).length,
       optimalStock: filteredData.filter(item => item.inventarioActual >= item.minimo * 1.3 && item.inventarioActual <= item.maximo).length,
@@ -299,6 +366,8 @@ export default function App() {
   const exportToExcel = () => {
     const exportData = filteredData.map(item => ({
       'Producto': item.producto,
+      'Código': item.codigo,
+      'Unidad': item.unidad,
       'Sede': item.sede,
       'Familia': item.familia,
       'Consumo Diario': item.consumoDiario.toFixed(2),
@@ -320,6 +389,8 @@ export default function App() {
     
     const tableData = filteredData.map(item => [
       item.producto,
+      item.codigo,
+      item.unidad,
       item.sede,
       item.familia,
       item.consumoDiario.toFixed(2),
@@ -330,7 +401,7 @@ export default function App() {
     ]);
 
     doc.autoTable({
-      head: [['Producto', 'Sede', 'Familia', 'Cons. Diario', 'Mínimo', 'Máximo', 'Inv. Actual', 'Reposición']],
+      head: [['Producto', 'Código', 'Unidad', 'Sede', 'Familia', 'Cons. Diario', 'Mínimo', 'Máximo', 'Inv. Actual', 'Reposición']],
       body: tableData,
       startY: 25,
       theme: 'grid',
@@ -382,6 +453,7 @@ export default function App() {
           className={`
             relative border-2 border-dashed rounded-3xl p-12 text-center transition-all
             ${isDragging ? 'border-blue-500 bg-blue-50/50' : 'border-blue-100 bg-white'}
+            ${isProcessing ? 'opacity-50 pointer-events-none' : ''}
           `}
           onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
@@ -389,81 +461,129 @@ export default function App() {
         >
           <div className="max-w-md mx-auto space-y-4">
             <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto">
-              <Upload className="w-8 h-8" />
+              {isProcessing ? (
+                <RefreshCw className="w-8 h-8 animate-spin" />
+              ) : (
+                <Upload className="w-8 h-8" />
+              )}
             </div>
             <div className="space-y-2">
-              <h3 className="text-xl font-semibold text-blue-900">Cargar reporte de ventas</h3>
+              <h3 className="text-xl font-semibold text-blue-900">
+                {isProcessing ? 'Procesando datos...' : 'Cargar reporte de ventas'}
+              </h3>
               <p className="text-blue-600/70 text-sm">
-                Sube tu archivo Excel. Detectamos automáticamente columnas como: <br />
-                <span className="font-mono bg-blue-50 px-1 rounded text-[10px] text-blue-600">Almacén, Artículo, Venta, Coste Unitario</span>
+                {isProcessing 
+                  ? 'Estamos analizando tu archivo Excel para generar el reporte.' 
+                  : 'Sube tu archivo Excel. Detectamos automáticamente columnas como Almacén, Artículo, Venta, Coste Unitario.'}
               </p>
             </div>
-            {error && (
-              <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm flex items-center gap-2 justify-center border border-red-100">
-                <AlertCircle className="w-4 h-4" />
-                {error}
+            
+            {!isProcessing && (
+              <>
+                <input 
+                  type="file" 
+                  ref={fileRef}
+                  className="hidden" 
+                  accept=".xlsx, .xls" 
+                  onChange={handleFileUpload} 
+                />
+
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-[#4f8fce] px-5 py-3 font-medium text-white transition hover:bg-[#3f7fbe] shadow-lg shadow-blue-200"
+                >
+                  <FileSpreadsheet className="h-5 w-5" />
+                  Seleccionar archivo
+                </button>
+              </>
+            )}
+
+            {fileName && !error && (
+              <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#e7f6ee] px-4 py-2 text-sm text-[#3a8b68]">
+                <CheckCircle2 className="h-4 w-4" /> {fileName} cargado correctamente
               </div>
             )}
-            <label className="btn-primary w-fit mx-auto cursor-pointer">
-              <Upload className="w-4 h-4" />
-              Seleccionar archivo
-              <input type="file" className="hidden" accept=".xlsx, .xls" onChange={handleFileUpload} />
-            </label>
+
+            {error && (
+              <div className="mt-4 max-w-3xl rounded-2xl bg-[#fdecec] p-4 text-left text-sm text-[#c94b4b]">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              </div>
+            )}
           </div>
         </motion.div>
       ) : (
         <>
-          {/* Stats Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.1 }} className="rounded-3xl border border-[#d7e3ef] bg-[#fdfdfd] p-5 shadow-sm flex items-center gap-4">
-              <div className="w-12 h-12 bg-red-50 text-red-600 rounded-xl flex items-center justify-center">
-                <AlertCircle className="w-6 h-6" />
+          {/* Stats Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-6 gap-4">
+            {/* Main KPI: Replenishment */}
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }}
+              className="md:col-span-2 lg:col-span-2 rounded-3xl bg-blue-600 p-6 text-white shadow-xl shadow-blue-100 flex flex-col justify-between relative overflow-hidden"
+            >
+              <div className="relative z-10">
+                <p className="text-blue-100 text-sm font-medium">Total Reposición Sugerida</p>
+                <h2 className="text-4xl font-bold mt-1">{formatNumber(stats?.totalReplenish, 0)}</h2>
+                <p className="text-blue-200 text-xs mt-2 flex items-center gap-1">
+                  <Package className="w-3 h-3" /> Unidades totales a pedir
+                </p>
               </div>
-              <div>
-                <p className="text-sm text-[#5f6b7a] font-medium">Bajo Mínimo</p>
-                <p className="text-2xl font-bold text-[#1f2a44]">{stats?.lowStock}</p>
-              </div>
+              <RefreshCw className="absolute -right-4 -bottom-4 w-32 h-32 text-white/10 rotate-12" />
             </motion.div>
 
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }} className="rounded-3xl border border-[#d7e3ef] bg-[#fdfdfd] p-5 shadow-sm flex items-center gap-4">
-              <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-xl flex items-center justify-center">
-                <TrendingUp className="w-6 h-6" />
+            {/* Secondary KPIs */}
+            <div className="md:col-span-2 lg:col-span-4 grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-2 text-slate-500 mb-2">
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span className="text-xs font-medium uppercase tracking-wider">Registros</span>
+                </div>
+                <div className="text-2xl font-bold text-slate-900">{rawCount}</div>
               </div>
-              <div>
-                <p className="text-sm text-[#5f6b7a] font-medium">Cerca del Mínimo</p>
-                <p className="text-2xl font-bold text-[#1f2a44]">{stats?.nearMinStock}</p>
-              </div>
-            </motion.div>
 
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.3 }} className="rounded-3xl border border-[#d7e3ef] bg-[#fdfdfd] p-5 shadow-sm flex items-center gap-4">
-              <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center">
-                <CheckCircle2 className="w-6 h-6" />
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-2 text-slate-500 mb-2">
+                  <Package className="w-4 h-4" />
+                  <span className="text-xs font-medium uppercase tracking-wider">Productos</span>
+                </div>
+                <div className="text-2xl font-bold text-slate-900">{stats?.totalProductos}</div>
               </div>
-              <div>
-                <p className="text-sm text-[#5f6b7a] font-medium">Stock Óptimo</p>
-                <p className="text-2xl font-bold text-[#1f2a44]">{stats?.optimalStock}</p>
-              </div>
-            </motion.div>
 
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.4 }} className="rounded-3xl border border-[#d7e3ef] bg-[#fdfdfd] p-5 shadow-sm flex items-center gap-4">
-              <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center">
-                <MapPin className="w-6 h-6" />
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-2 text-slate-500 mb-2">
+                  <MapPin className="w-4 h-4" />
+                  <span className="text-xs font-medium uppercase tracking-wider">Sedes</span>
+                </div>
+                <div className="text-2xl font-bold text-slate-900">{stats?.totalSedes}</div>
               </div>
-              <div>
-                <p className="text-sm text-[#5f6b7a] font-medium">Total Sedes</p>
-                <p className="text-2xl font-bold text-[#1f2a44]">{stats?.totalSedes}</p>
-              </div>
-            </motion.div>
 
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.5 }} className="rounded-3xl border border-[#d7e3ef] bg-red-50/30 p-5 shadow-sm flex items-center gap-4">
-              <div className="w-12 h-12 bg-red-100 text-red-600 rounded-xl flex items-center justify-center">
-                <RefreshCw className="w-6 h-6" />
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-2 text-red-500 mb-2">
+                  <AlertCircle className="w-4 h-4" />
+                  <span className="text-xs font-medium uppercase tracking-wider">Críticos</span>
+                </div>
+                <div className="text-2xl font-bold text-red-600">{stats?.lowStock}</div>
               </div>
-              <div>
-                <p className="text-sm text-red-600 font-semibold">Total Reposición</p>
-                <p className="text-2xl font-bold text-red-900">{stats?.totalReplenish.toFixed(0)}</p>
-              </div>
-            </motion.div>
+            </div>
+          </div>
+
+          {/* Status Distribution */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-orange-50 border border-orange-100">
+              <div className="w-2 h-2 rounded-full bg-orange-500" />
+              <span className="text-xs font-medium text-orange-700">Alerta: {stats?.nearMinStock}</span>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-emerald-50 border border-emerald-100">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-xs font-medium text-emerald-700">Óptimo: {stats?.optimalStock}</span>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-blue-50 border border-blue-100">
+              <div className="w-2 h-2 rounded-full bg-blue-500" />
+              <span className="text-xs font-medium text-blue-700">Sobrestock: {stats?.overStock}</span>
+            </div>
           </div>
 
           {/* Filters */}
@@ -482,54 +602,67 @@ export default function App() {
 
               <div className="rounded-2xl border border-[#cfe0ee] bg-[#f8fbfe] px-4 py-3 relative" ref={familyDropdownRef}>
                 <button 
-                  onClick={() => setIsFamilyDropdownOpen(!isFamilyDropdownOpen)}
-                  className="w-full flex items-center justify-between text-sm text-[#1f2a44] outline-none"
+                  onClick={() => setShowFamilyDropdown(!showFamilyDropdown)}
+                  className="w-full text-left bg-transparent text-sm text-[#1f2a44] outline-none flex items-center justify-between"
                 >
                   <span className="truncate">
-                    {filterFamilia.length === 0 
-                      ? "Seleccionar familias" 
-                      : filterFamilia.length === uniqueFamilias.length 
-                        ? "Todas las familias" 
-                        : `${filterFamilia.length} seleccionadas`}
+                    {filterFamilia.length > 0 ? `${filterFamilia.length} seleccionadas` : "Seleccionar familias"}
                   </span>
-                  <ChevronDown className={`w-4 h-4 text-[#6f8fb1] transition-transform ${isFamilyDropdownOpen ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`w-4 h-4 text-[#6f8fb1] transition-transform ${showFamilyDropdown ? 'rotate-180' : ''}`} />
                 </button>
 
-                {isFamilyDropdownOpen && (
-                  <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-[#cfe0ee] rounded-2xl shadow-xl z-50 max-h-[300px] overflow-y-auto scrollbar-thin scrollbar-thumb-blue-200 p-2 space-y-1">
+                {showFamilyDropdown && (
+                  <div className="absolute z-10 mt-2 w-full max-h-80 overflow-y-auto rounded-xl border border-[#cfe0ee] bg-white shadow-xl p-2 space-y-1 scrollbar-thin scrollbar-thumb-blue-200">
+                    <div className="px-2 py-1.5 sticky top-0 bg-white border-b border-slate-100 mb-1">
+                      <div className="flex items-center gap-2 px-2 py-1 bg-slate-50 rounded-lg border border-slate-200">
+                        <Search className="w-3 h-3 text-slate-400" />
+                        <input 
+                          type="text" 
+                          placeholder="Filtrar familias..." 
+                          className="w-full bg-transparent text-[10px] outline-none text-slate-700"
+                          value={familySearch}
+                          onChange={(e) => setFamilySearch(e.target.value)}
+                        />
+                      </div>
+                    </div>
                     <button 
                       onClick={() => {
-                        if (filterFamilia.length === uniqueFamilias.length) {
+                        const filtered = uniqueFamilias.filter(f => normalizeText(f).includes(normalizeText(familySearch)));
+                        if (filterFamilia.length === filtered.length) {
                           setFilterFamilia([]);
                         } else {
-                          setFilterFamilia([...uniqueFamilias]);
+                          setFilterFamilia([...filtered]);
                         }
                       }}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-blue-50 text-xs font-semibold text-blue-600 border-b border-blue-50 mb-1"
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[#f3f7fb] text-xs font-semibold text-blue-600 border-b border-blue-50 mb-1"
                     >
-                      <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${filterFamilia.length === uniqueFamilias.length ? 'bg-blue-600 border-blue-600' : 'border-blue-200'}`}>
-                        {filterFamilia.length === uniqueFamilias.length && <Check className="w-3 h-3 text-white" />}
+                      <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${filterFamilia.length === uniqueFamilias.filter(f => normalizeText(f).includes(normalizeText(familySearch))).length && uniqueFamilias.filter(f => normalizeText(f).includes(normalizeText(familySearch))).length > 0 ? 'bg-blue-600 border-blue-600' : 'border-blue-200'}`}>
+                        {filterFamilia.length === uniqueFamilias.filter(f => normalizeText(f).includes(normalizeText(familySearch))).length && uniqueFamilias.filter(f => normalizeText(f).includes(normalizeText(familySearch))).length > 0 && <Check className="w-3 h-3 text-white" />}
                       </div>
-                      Seleccionar todas
+                      Seleccionar visibles
                     </button>
-                    {uniqueFamilias.map(fam => (
-                      <button 
-                        key={fam}
-                        onClick={() => {
-                          if (filterFamilia.includes(fam)) {
-                            setFilterFamilia(filterFamilia.filter(f => f !== fam));
-                          } else {
-                            setFilterFamilia([...filterFamilia, fam]);
-                          }
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-blue-50 text-xs text-[#1f2a44] transition-colors"
-                      >
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${filterFamilia.includes(fam) ? 'bg-blue-600 border-blue-600' : 'border-blue-200'}`}>
-                          {filterFamilia.includes(fam) && <Check className="w-3 h-3 text-white" />}
-                        </div>
-                        <span className="truncate">{fam}</span>
-                      </button>
-                    ))}
+                    {uniqueFamilias
+                      .filter(f => normalizeText(f).includes(normalizeText(familySearch)))
+                      .map(family => (
+                        <label key={family} className="flex items-center gap-2 px-2 py-1.5 hover:bg-[#f3f7fb] rounded cursor-pointer transition-colors">
+                          <input
+                            type="checkbox"
+                            className="hidden"
+                            checked={filterFamilia.includes(family)}
+                            onChange={() => {
+                              if (filterFamilia.includes(family)) {
+                                setFilterFamilia(filterFamilia.filter((f) => f !== family));
+                              } else {
+                                setFilterFamilia([...filterFamilia, family]);
+                              }
+                            }}
+                          />
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${filterFamilia.includes(family) ? 'bg-blue-600 border-blue-600' : 'border-blue-200'}`}>
+                            {filterFamilia.includes(family) && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                          <span className="text-xs text-[#1f2a44] truncate">{family}</span>
+                        </label>
+                      ))}
                   </div>
                 )}
               </div>
@@ -566,11 +699,11 @@ export default function App() {
                 <thead>
                   <tr className="border-b border-[#cfe0ee] bg-[#e8f2fb] text-left text-[#5f6b7a]">
                     <th className="px-3 py-3">Producto</th>
-                    <th className="px-3 py-3 text-right">Consumo diario</th>
-                    <th className="px-3 py-3 text-right">Mínimo</th>
-                    <th className="px-3 py-3 text-right">Máximo</th>
-                    <th className="px-3 py-3 text-right">Inv. Actual</th>
-                    <th className="px-3 py-3 text-right">Reposición sugerida</th>
+                    <th className="px-3 py-3">Unidad</th>
+                    <th className="px-3 py-3 text-center">Estado</th>
+                    <th className="px-3 py-3 text-right">Mín / Máx</th>
+                    <th className="px-3 py-3 text-right">Stock Actual</th>
+                    <th className="px-3 py-3 text-right">Reposición</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -579,6 +712,9 @@ export default function App() {
                       const isLow = item.inventarioActual < item.minimo;
                       const isNearMin = item.inventarioActual >= item.minimo && item.inventarioActual < item.minimo * 1.3;
                       const isOptimal = item.inventarioActual >= item.minimo * 1.3 && item.inventarioActual <= item.maximo;
+                      const isOver = item.inventarioActual > item.maximo;
+
+                      const progress = Math.min((item.inventarioActual / item.maximo) * 100, 100);
 
                       return (
                         <motion.tr 
@@ -587,40 +723,58 @@ export default function App() {
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
-                          className="border-b border-[#e2ebf3] hover:bg-[#f8fbfe]"
+                          className="border-b border-[#e2ebf3] hover:bg-[#f8fbfe] transition-colors"
                         >
-                          <td className="px-3 py-3">
-                            <div className="font-medium text-[#314155]">{item.producto}</div>
-                            <div className="text-[10px] text-[#6f8fb1] flex gap-2">
-                              <span>{item.sede}</span>
+                          <td className="px-3 py-4">
+                            <div className="font-semibold text-[#1f2a44]">{item.producto}</div>
+                            <div className="text-[10px] text-[#6f8fb1] flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+                              {item.codigo && <span className="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-[9px]">{item.codigo}</span>}
+                              <span className="flex items-center gap-1"><MapPin className="w-2.5 h-2.5" /> {item.sede}</span>
                               <span>•</span>
-                              <span>{item.familia}</span>
+                              <span className="flex items-center gap-1"><Package className="w-2.5 h-2.5" /> {item.familia}</span>
                             </div>
                           </td>
-                          <td className="px-3 py-3 text-right text-[#5f6b7a] font-mono">
-                            {formatNumber(item.consumoDiario, 2)}
+                          <td className="px-3 py-4">
+                            <div className="text-xs text-[#5f6b7a] font-medium">{item.unidad}</div>
                           </td>
-                          <td className="px-3 py-3 text-right text-[#5f6b7a] font-mono">
-                            {formatNumber(item.minimo, 2)}
+                          <td className="px-3 py-4">
+                            <div className="flex justify-center">
+                              <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                isLow ? 'bg-red-100 text-red-700' : 
+                                isNearMin ? 'bg-orange-100 text-orange-700' : 
+                                isOptimal ? 'bg-emerald-100 text-emerald-700' : 
+                                'bg-blue-100 text-blue-700'
+                              }`}>
+                                {isLow ? 'Crítico' : isNearMin ? 'Alerta' : isOptimal ? 'Óptimo' : 'Exceso'}
+                              </span>
+                            </div>
                           </td>
-                          <td className="px-3 py-3 text-right text-[#5f6b7a] font-mono">
-                            {formatNumber(item.maximo, 2)}
+                          <td className="px-3 py-4 text-right">
+                            <div className="text-xs font-medium text-[#5f6b7a]">
+                              {formatNumber(item.minimo, 1)} - {formatNumber(item.maximo, 1)}
+                            </div>
+                            <div className="mt-1.5 w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${progress}%` }}
+                                className={`h-full rounded-full ${
+                                  isLow ? 'bg-red-500' : 
+                                  isNearMin ? 'bg-orange-500' : 
+                                  isOptimal ? 'bg-emerald-500' : 
+                                  'bg-blue-500'
+                                }`}
+                              />
+                            </div>
                           </td>
-                          <td className="px-3 py-3 text-right">
+                          <td className="px-3 py-4 text-right">
                             <div className="flex items-center justify-end gap-2">
-                              <div className={`w-1.5 h-1.5 rounded-full ${
-                                isLow ? 'bg-red-500 animate-pulse' : 
-                                isNearMin ? 'bg-orange-500' : 
-                                isOptimal ? 'bg-emerald-500' : 
-                                'bg-blue-500'
-                              }`} />
                               <input 
                                 type="number" 
                                 value={item.inventarioActual || ''} 
                                 onChange={(e) => updateInventory(item.id, e.target.value)}
                                 placeholder="0"
                                 className={`
-                                  w-16 text-right py-1 px-2 rounded-lg border font-mono text-xs outline-none transition-all
+                                  w-20 text-right py-1.5 px-3 rounded-xl border font-mono text-sm outline-none transition-all
                                   ${isLow ? 'border-red-200 bg-red-50 text-red-700 focus:ring-red-500' : 
                                     isNearMin ? 'border-orange-200 bg-orange-50 text-orange-700 focus:ring-orange-500' :
                                     isOptimal ? 'border-emerald-200 bg-emerald-50 text-emerald-700 focus:ring-emerald-500' :
@@ -629,8 +783,12 @@ export default function App() {
                               />
                             </div>
                           </td>
-                          <td className="px-3 py-3 text-right font-semibold text-[#c94b4b]">
-                            {formatNumber(item.reposicion, 0)}
+                          <td className="px-3 py-4 text-right">
+                            <div className={`inline-block px-3 py-1 rounded-xl font-bold ${
+                              item.reposicion > 0 ? 'bg-red-50 text-red-600 border border-red-100' : 'text-slate-300'
+                            }`}>
+                              {item.reposicion > 0 ? formatNumber(item.reposicion, 0) : '-'}
+                            </div>
                           </td>
                         </motion.tr>
                       );
