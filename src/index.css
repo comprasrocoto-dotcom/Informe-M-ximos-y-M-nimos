@@ -15,15 +15,31 @@ body {
 }
 
 .card {
-  @apply bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden;
+  @apply bg-white rounded-2xl border border-blue-100/50 shadow-sm overflow-hidden;
 }
 
 .btn-primary {
-  @apply px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed;
+  @apply px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm shadow-blue-200;
 }
 
 .btn-secondary {
-  @apply px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl font-medium transition-all flex items-center gap-2;
+  @apply px-4 py-2 bg-white hover:bg-blue-50/50 text-blue-700 border border-blue-100 rounded-xl font-medium transition-all flex items-center gap-2;
+}
+
+.input-field {
+  @apply w-full pl-10 pr-4 py-2 bg-blue-50/30 border border-blue-100 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all placeholder:text-blue-300;
+}
+
+.table-header {
+  @apply bg-blue-50/50 border-b border-blue-100;
+}
+
+.table-row {
+  @apply hover:bg-blue-50/20 transition-colors border-b border-blue-50/50;
+}
+
+.replenish-badge {
+  @apply bg-red-50 text-red-600 font-bold px-2 py-1 rounded-lg border border-red-100/50;
 }
 
 input[type="number"]::-webkit-inner-spin-button,
