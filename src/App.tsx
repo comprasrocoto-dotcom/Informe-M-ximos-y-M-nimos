@@ -179,7 +179,7 @@ export default function App() {
     // 🔥 Detección más agresiva (incluye errores de encoding y alias comunes)
     let sedeCol = findColumn(columns, ["Sede", "Almacen", "Almacén", "almacen", "almacen", "almac", "alm", "Sucursal", "Sede/Almacen", "AlmacÃ©n"]);
     let fechaCol = findColumn(columns, ["Fecha", "fecha", "fec", "Date"]);
-    let articuloCol = findColumn(columns, ["Producto", "Articulo", "Artículo", "Subarticulo", "Subartículo", "articulo", "subarticulo", "art", "subart", "Nombre", "ArtÃculo"]);
+    let articuloCol = findColumn(columns, ["Producto", "Articulo", "Artículo", "Nombre", "ArtÃculo"]);
     let unidadCol = findColumn(columns, ["Unidad", "Unidad de Medida", "UM", "U.M.", "UOM", "Subarticulo", "Subartículo", "Presentacion", "Presentación", "Subartículo"]);
     let familiaCol = findColumn(columns, ["Subfamilia", "Familia", "familia", "fam", "Grupo", "Categoría"]);
     let ventaCol = findColumn(columns, ["Cantidad", "Venta", "venta", "valor", "Unidades", "Cant", "Qty"]);
@@ -700,8 +700,9 @@ export default function App() {
                   <tr className="border-b border-[#cfe0ee] bg-[#e8f2fb] text-left text-[#5f6b7a]">
                     <th className="px-3 py-3">Producto</th>
                     <th className="px-3 py-3">Unidad</th>
-                    <th className="px-3 py-3 text-center">Estado</th>
-                    <th className="px-3 py-3 text-right">Mín / Máx</th>
+                    <th className="px-3 py-3 text-right">Consumo Diario</th>
+                    <th className="px-3 py-3 text-right">Mínimo</th>
+                    <th className="px-3 py-3 text-right">Máximo</th>
                     <th className="px-3 py-3 text-right">Stock Actual</th>
                     <th className="px-3 py-3 text-right">Reposición</th>
                   </tr>
@@ -737,33 +738,19 @@ export default function App() {
                           <td className="px-3 py-4">
                             <div className="text-xs text-[#5f6b7a] font-medium">{item.unidad}</div>
                           </td>
-                          <td className="px-3 py-4">
-                            <div className="flex justify-center">
-                              <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                isLow ? 'bg-red-100 text-red-700' : 
-                                isNearMin ? 'bg-orange-100 text-orange-700' : 
-                                isOptimal ? 'bg-emerald-100 text-emerald-700' : 
-                                'bg-blue-100 text-blue-700'
-                              }`}>
-                                {isLow ? 'Crítico' : isNearMin ? 'Alerta' : isOptimal ? 'Óptimo' : 'Exceso'}
-                              </span>
+                          <td className="px-3 py-4 text-right">
+                            <div className="text-xs font-bold text-blue-600 bg-blue-50 py-1 px-2 rounded-lg border border-blue-100 inline-block min-w-[60px]">
+                              {formatNumber(item.consumoDiario, 2)}
                             </div>
                           </td>
                           <td className="px-3 py-4 text-right">
-                            <div className="text-xs font-medium text-[#5f6b7a]">
-                              {formatNumber(item.minimo, 1)} - {formatNumber(item.maximo, 1)}
+                            <div className="text-xs font-medium text-[#5f6b7a] bg-[#f8fbfe] py-1 px-2 rounded-lg border border-[#e2e8f0] inline-block min-w-[60px]">
+                              {formatNumber(item.minimo, 1)}
                             </div>
-                            <div className="mt-1.5 w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                              <motion.div 
-                                initial={{ width: 0 }}
-                                animate={{ width: `${progress}%` }}
-                                className={`h-full rounded-full ${
-                                  isLow ? 'bg-red-500' : 
-                                  isNearMin ? 'bg-orange-500' : 
-                                  isOptimal ? 'bg-emerald-500' : 
-                                  'bg-blue-500'
-                                }`}
-                              />
+                          </td>
+                          <td className="px-3 py-4 text-right">
+                            <div className="text-xs font-medium text-[#5f6b7a] bg-[#f8fbfe] py-1 px-2 rounded-lg border border-[#e2e8f0] inline-block min-w-[60px]">
+                              {formatNumber(item.maximo, 1)}
                             </div>
                           </td>
                           <td className="px-3 py-4 text-right">
