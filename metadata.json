@@ -1,0 +1,5 @@
+{
+  "name": "Smart Inventory Analyst",
+  "description": "Analyze sales data from Excel to calculate optimal stock levels and suggested replenishment across multiple locations.",
+  "requestFramePermissions": []
+}
