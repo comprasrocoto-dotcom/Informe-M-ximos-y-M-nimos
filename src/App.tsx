@@ -179,8 +179,8 @@ export default function App() {
     // 🔥 Detección más agresiva (incluye errores de encoding y alias comunes)
     let sedeCol = findColumn(columns, ["Sede", "Almacen", "Almacén", "almacen", "almacen", "almac", "alm", "Sucursal", "Sede/Almacen", "AlmacÃ©n"]);
     let fechaCol = findColumn(columns, ["Fecha", "fecha", "fec", "Date"]);
-    let articuloCol = findColumn(columns, ["Producto", "Articulo", "Artículo", "Nombre", "ArtÃculo"]);
-    let unidadCol = findColumn(columns, ["Unidad", "Unidad de Medida", "UM", "U.M.", "UOM", "Subarticulo", "Subartículo", "Presentacion", "Presentación", "Subartículo"]);
+    let articuloCol = findColumn(columns, ["Producto", "Articulo", "Artículo", "Nombre", "ArtÃculo", "art", "articulo"]);
+    let unidadCol = findColumn(columns, ["Unidad", "Unidad de Medida", "UM", "U.M.", "UOM", "Subarticulo", "Subartículo", "Subarti-culo", "Subartículo", "Presentacion", "Presentación", "sub art", "subarticulo"]);
     let familiaCol = findColumn(columns, ["Subfamilia", "Familia", "familia", "fam", "Grupo", "Categoría"]);
     let ventaCol = findColumn(columns, ["Cantidad", "Venta", "venta", "valor", "Unidades", "Cant", "Qty"]);
     let costoUnitarioCol = findColumn(columns, ["Coste Unitario", "Costo Unitario", "Costo", "coste unitario", "coste", "precio", "Precio Costo", "Unit Cost"]);
@@ -203,8 +203,8 @@ export default function App() {
     if (stockJson.length > 0) {
       const stockCols = Object.keys(stockJson[0]).map(c => String(c).trim());
       const sSedeCol = findColumn(stockCols, ["Sede", "Almacen", "Sucursal", "Sede/Almacen", "Almacén", "AlmacÃ©n"]);
-      const sArtCol = findColumn(stockCols, ["Producto", "Articulo", "Nombre", "Artículo", "ArtÃculo"]);
-      const sSubArtCol = findColumn(stockCols, ["Subarticulo", "Subartículo", "Unidad", "Presentación", "Subartículo"]);
+      const sArtCol = findColumn(stockCols, ["Producto", "Articulo", "Nombre", "Artículo", "ArtÃculo", "art"]);
+      const sSubArtCol = findColumn(stockCols, ["Subarticulo", "Subartículo", "Subarti-culo", "Subartículo", "Unidad", "Presentación", "sub art"]);
       const sCodeCol = findColumn(stockCols, ["Codigo", "Código", "Cód. Barras", "Referencia", "CÃ³d. Barras"]);
       const sStockCol = findColumn(stockCols, ["Stock", "Inventario", "Existencias", "Cant", "Cantidad", "Actual"]);
       
@@ -212,7 +212,7 @@ export default function App() {
         stockJson.forEach(row => {
           const sede = fixMojibake(row[sSedeCol!]);
           const producto = fixMojibake(row[sArtCol]);
-          const subarticulo = sSubArtCol ? fixMojibake(row[sSubArtCol]) : "";
+          const subarticulo = sSubArtCol ? fixMojibake(row[sSubArtCol]) : fixMojibake(row["Subarticulo"] || row["Subartículo"] || row["Subartículo"] || row["Subarti-culo"] || "");
           const codigo = sCodeCol ? String(row[sCodeCol] || "").trim() : "";
           const stock = Number(row[sStockCol] || 0);
 
@@ -233,7 +233,7 @@ export default function App() {
 
     ventasJson.forEach((row) => {
       const rawProd = articuloCol ? row[articuloCol] : "";
-      const rawUnidad = unidadCol ? row[unidadCol] : "—";
+      const rawUnidad = unidadCol ? row[unidadCol] : (row["Subarticulo"] || row["Subartículo"] || row["Subartículo"] || row["Subarti-culo"] || "—");
       const rawSede = sedeCol ? row[sedeCol] : "GENERAL";
       const rawFam = familiaCol ? row[familiaCol] : "SIN FAMILIA";
       const rawCode = codigoCol ? row[codigoCol] : "";
@@ -313,7 +313,7 @@ export default function App() {
 
   const filteredData = useMemo(() => {
     const searchNormalized = normalizeText(filterProducto);
-    return data.filter(item => {
+    const filtered = data.filter(item => {
       const matchText = 
         normalizeText(item.producto).includes(searchNormalized) ||
         normalizeText(item.sede).includes(searchNormalized) ||
@@ -323,6 +323,30 @@ export default function App() {
       const matchFamilia = filterFamilia.length === 0 || filterFamilia.includes(item.familia);
       
       return matchText && matchSede && matchFamilia;
+    });
+
+    // Sorting by criticality based on days of inventory
+    return filtered.sort((a, b) => {
+      const getPriority = (item: any) => {
+        const dias = item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0;
+        if (dias <= 0) return 0; // Rojo fuerte
+        if (dias < 1) return 1;  // Rojo
+        if (dias <= 3) return 2; // Verde (Óptimo)
+        if (dias <= 5) return 3; // Amarillo
+        return 4;                // Azul
+      };
+      
+      const priorityA = getPriority(a);
+      const priorityB = getPriority(b);
+      
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+      
+      // Secondary sort by days ascending
+      const diasA = a.consumoDiario > 0 ? a.inventarioActual / a.consumoDiario : 0;
+      const diasB = b.consumoDiario > 0 ? b.inventarioActual / b.consumoDiario : 0;
+      return diasA - diasB;
     });
   }, [data, filterSede, filterProducto, filterFamilia]);
 
@@ -349,10 +373,20 @@ export default function App() {
       totalItems: filteredData.length,
       totalProductos,
       totalSedes,
-      lowStock: filteredData.filter(item => item.inventarioActual < item.minimo).length,
-      nearMinStock: filteredData.filter(item => item.inventarioActual >= item.minimo && item.inventarioActual < item.minimo * 1.3).length,
-      optimalStock: filteredData.filter(item => item.inventarioActual >= item.minimo * 1.3 && item.inventarioActual <= item.maximo).length,
-      overStock: filteredData.filter(item => item.inventarioActual > item.maximo).length,
+      critical: filteredData.filter(item => (item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0) <= 0).length,
+      low: filteredData.filter(item => {
+        const d = item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0;
+        return d > 0 && d < 1;
+      }).length,
+      optimal: filteredData.filter(item => {
+        const d = item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0;
+        return d >= 1 && d <= 3;
+      }).length,
+      warning: filteredData.filter(item => {
+        const d = item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0;
+        return d > 3 && d <= 5;
+      }).length,
+      excess: filteredData.filter(item => (item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0) > 5).length,
       totalReplenish: filteredData.reduce((acc, item) => acc + item.reposicion, 0)
     };
   }, [data, filteredData]);
@@ -561,28 +595,36 @@ export default function App() {
               </div>
 
               <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center gap-2 text-red-500 mb-2">
+                <div className="flex items-center gap-2 text-red-600 mb-2">
                   <AlertCircle className="w-4 h-4" />
-                  <span className="text-xs font-medium uppercase tracking-wider">Críticos</span>
+                  <span className="text-xs font-medium uppercase tracking-wider">Críticos (&lt;1d)</span>
                 </div>
-                <div className="text-2xl font-bold text-red-600">{stats?.lowStock}</div>
+                <div className="text-2xl font-bold text-red-600">{(stats?.critical || 0) + (stats?.low || 0)}</div>
               </div>
             </div>
           </div>
 
           {/* Status Distribution */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-orange-50 border border-orange-100">
-              <div className="w-2 h-2 rounded-full bg-orange-500" />
-              <span className="text-xs font-medium text-orange-700">Alerta: {stats?.nearMinStock}</span>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-red-600 text-white border border-red-700">
+              <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+              <span className="text-xs font-bold">Sin Stock: {stats?.critical}</span>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-red-50 border border-red-100">
+              <div className="w-2 h-2 rounded-full bg-red-500" />
+              <span className="text-xs font-medium text-red-700">Crítico: {stats?.low}</span>
             </div>
             <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-emerald-50 border border-emerald-100">
               <div className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-xs font-medium text-emerald-700">Óptimo: {stats?.optimalStock}</span>
+              <span className="text-xs font-medium text-emerald-700">Óptimo: {stats?.optimal}</span>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-amber-50 border border-amber-100">
+              <div className="w-2 h-2 rounded-full bg-amber-500" />
+              <span className="text-xs font-medium text-amber-700">Sobre Stock: {stats?.warning}</span>
             </div>
             <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-blue-50 border border-blue-100">
               <div className="w-2 h-2 rounded-full bg-blue-500" />
-              <span className="text-xs font-medium text-blue-700">Sobrestock: {stats?.overStock}</span>
+              <span className="text-xs font-medium text-blue-700">Exceso: {stats?.excess}</span>
             </div>
           </div>
 
@@ -705,6 +747,7 @@ export default function App() {
                     <th className="px-3 py-3 text-right">Máximo</th>
                     <th className="px-3 py-3 text-right">Stock Actual</th>
                     <th className="px-3 py-3 text-right">Reposición</th>
+                    <th className="px-3 py-3 text-right">Días Inventario</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -776,6 +819,20 @@ export default function App() {
                             }`}>
                               {item.reposicion > 0 ? formatNumber(item.reposicion, 0) : '-'}
                             </div>
+                          </td>
+                          <td className="px-3 py-4 text-right">
+                            <span
+                              className={`inline-flex min-w-[70px] items-center justify-center rounded-xl px-3 py-1 text-white text-xs font-semibold ${(() => {
+                                const dias = item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0;
+                                if (dias <= 0) return 'bg-red-600';
+                                if (dias < 1) return 'bg-red-500';
+                                if (dias <= 3) return 'bg-green-500';
+                                if (dias <= 5) return 'bg-yellow-400 text-black';
+                                return 'bg-blue-500';
+                              })()}`}
+                            >
+                              {formatNumber(item.consumoDiario > 0 ? item.inventarioActual / item.consumoDiario : 0, 1)} d
+                            </span>
                           </td>
                         </motion.tr>
                       );
